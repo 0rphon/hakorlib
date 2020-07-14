@@ -1,5 +1,5 @@
 // cSpell:enableCompoundWords
-// cSpell:words tlhelp DWORD dwflag ctypes ctype winnt basetsd LPCVOID LPVOID PHANDLE LPCWSTR PLUID LUID baseaddr
+// cSpell:words tlhelp DWORD dwflag ctypes ctype winnt basetsd LPCVOID LPVOID PHANDLE LPCWSTR PLUID LUID baseaddr dll's
 
 use winapi::um::tlhelp32::{TH32CS_SNAPPROCESS, PROCESSENTRY32W, TH32CS_SNAPMODULE, TH32CS_SNAPMODULE32, MODULEENTRY32W, CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, Module32FirstW, Module32NextW};
 use winapi::um::handleapi::{INVALID_HANDLE_VALUE, CloseHandle};
@@ -14,7 +14,15 @@ use std::ffi::OsString;
 
 
 
-///takes process name as &str and returns corresponding process ID
+/// takes process name as &str and returns corresponding process ID
+///
+/// # Examples
+///
+/// ```
+/// let process_name = "FarCry5.exe";
+/// let process_id = find_pid_by_name(process_name).unwrap_or_else(|e| {println!("{}",e); exit(1)});
+/// println!("{} PID: {}", process_name, process_id);
+/// ```
 #[cfg(target_os="windows")]
 pub fn find_pid_by_name(name: &str) -> Result<u32, String> {
     let snap_handle = unsafe {CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)};                             //DWORD dwflag TH32CS_SNAPMODULE32 and pid 0 tells api to create system snapshot of all processes
@@ -55,7 +63,17 @@ pub fn find_pid_by_name(name: &str) -> Result<u32, String> {
 
 
 
-///takes process pid and target dll name and returns BaseAddr
+/// takes process pid and target dll name and returns target dll's BaseAddr\
+/// needs admin rights
+///
+/// # Example
+///
+/// ```
+/// let process_id = 1829;
+/// let module_name = "FC_m64.dll";
+/// let base_addr = get_module_base_by_name(process_id, module_name).unwrap_or_else(|e| {println!("{}",e); exit(2)});
+/// println!("{} BaseAddr: 0x{:X}",module_name ,base_addr);
+/// ```
 #[cfg(target_os="windows")]
 pub fn get_module_base_by_name(pid: u32, name: &str) -> Result<u64, String> {
     let snap_handle = unsafe {CreateToolhelp32Snapshot(TH32CS_SNAPMODULE|TH32CS_SNAPMODULE32, pid)};        //tells api to create snapshot of 32&64 bit modules in target process
@@ -96,19 +114,35 @@ pub fn get_module_base_by_name(pid: u32, name: &str) -> Result<u64, String> {
 
 
 
-///gets handle to target process with all possible permissions
+/// gets handle to target process with all possible permissions\
+/// needs admin rights
+///
+/// # Example
+///
+/// ```
+/// let process_id = 1829;
+/// let process_handle = get_handle_all(process_id).unwrap_or_else(|e| {println!("{}",e); exit(3)});
+/// ```
 #[cfg(target_os="windows")]
 pub fn get_handle_all(pid: u32) -> Result<HANDLE, String> {
-    let handle = unsafe{OpenProcess(PROCESS_ALL_ACCESS, 0, pid)};   //takes the desired access, InheritHandle flag (false for us), and  pid. returns handle to process
+    let handle = unsafe{OpenProcess(PROCESS_ALL_ACCESS, 0, pid)};                       //takes the desired access, InheritHandle flag (false for us), and  pid. returns handle to process
     match handle as usize {
-        0x0 => Err("Unable to get process handle".to_string()),     //if handle is null return error
-        _ => Ok(handle),                                            //else return handle
+        0x0 => Err("Unable to get process handle (try running as admin)".to_string()),  //if handle is null return error
+        _ => Ok(handle),                                                                //else return handle
     }
 }
 
 
 
-///read <size> bytes at <addr> in <handle>
+/// read [size] bytes at [addr] in [handle]
+///
+/// # Example
+/// ```
+/// let health_call_addr = 0x7FFF7D33B0B4;
+/// let bytes = read_memory(process_handle, health_call_addr, 3).unwrap_or_else(|e| {println!("{}",e); exit(4)});
+/// if bytes == vec!(0xFF, 0x50, 0x30) {println!("Read successful: {:X?}",bytes)}
+/// else {println!("Error: Read bytes contain unexpected values:{:X?}",bytes); exit(5);}
+/// ```
 #[cfg(target_os="windows")]
 pub fn read_memory(handle: HANDLE, addr: u64, size: usize) -> Result<Vec<u8>, String> {
     unsafe {
@@ -127,7 +161,16 @@ pub fn read_memory(handle: HANDLE, addr: u64, size: usize) -> Result<Vec<u8>, St
 
 
 
-///write <buffer> at <addr> in <handle>
+/// write [buffer] at [addr] in [handle]\
+/// returns 0 if success
+///
+/// # Example
+///
+/// ```
+/// let health_call_addr = 0x7FFF7D33B0B4;
+/// let mut buffer = vec!(0x90;3);
+/// write_memory(process_handle, health_call_addr, &mut buffer).unwrap_or_else(|e| {println!("{}",e); exit(6)});
+/// ```
 #[cfg(target_os="windows")]
 pub fn write_memory(handle: HANDLE, addr: u64, buffer: &mut Vec<u8>) -> Result<u8,String> {
     unsafe {
