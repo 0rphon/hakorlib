@@ -60,7 +60,7 @@ pub fn find_pid_by_name(name: &str) -> Result<u32, String> {
 pub fn get_module_base_by_name(pid: u32, name: &str) -> Result<u64, String> {
     let snap_handle = unsafe {CreateToolhelp32Snapshot(TH32CS_SNAPMODULE|TH32CS_SNAPMODULE32, pid)};        //tells api to create snapshot of 32&64 bit modules in target process
     if snap_handle == INVALID_HANDLE_VALUE {                                                                //if snapshot handle == {0xffffffffffffffff as *mut ctypes::c_void}
-        return Err(format!("Invalid module snapshot handle: {:?}\n(Try running as admin)", snap_handle))    //return error
+        return Err(format!("Invalid module snapshot handle: {:?} (try running as admin)", snap_handle))    //return error
     }
 
     let mut module_entry: MODULEENTRY32W = unsafe {zeroed()};                                               //A pointer to a MODULEENTRY32W structure required by Module32FirstW
