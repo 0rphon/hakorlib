@@ -1,5 +1,5 @@
 // cSpell:enableCompoundWords
-// cSpell:words tlhelp DWORD dwflag ctypes ctype winnt basetsd LPCVOID LPVOID PHANDLE LPCWSTR PLUID LUID baseaddr dll's
+// cSpell:words tlhelp DWORD dwflag ctypes ctype winnt basetsd LPCVOID LPVOID PHANDLE LPCWSTR PLUID LUID baseaddr dll's nop's nopped
 
 use winapi::um::tlhelp32::{TH32CS_SNAPPROCESS, PROCESSENTRY32W, TH32CS_SNAPMODULE, TH32CS_SNAPMODULE32, MODULEENTRY32W, CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, Module32FirstW, Module32NextW};
 use winapi::um::handleapi::{INVALID_HANDLE_VALUE, CloseHandle};
@@ -20,7 +20,7 @@ use std::ffi::OsString;
 ///
 /// ```
 /// let process_name = "FarCry5.exe";
-/// let process_id = find_pid_by_name(process_name).unwrap_or_else(|e| {println!("{}",e); exit(1)});
+/// let process_id = find_pid_by_name(process_name).unwrap_or_else(|e| {panic!("{}",e)});
 /// println!("{} PID: {}", process_name, process_id);
 /// ```
 #[cfg(target_os="windows")]
@@ -71,7 +71,7 @@ pub fn find_pid_by_name(name: &str) -> Result<u32, String> {
 /// ```
 /// let process_id = 1829;
 /// let module_name = "FC_m64.dll";
-/// let base_addr = get_module_base_by_name(process_id, module_name).unwrap_or_else(|e| {println!("{}",e); exit(2)});
+/// let base_addr = get_module_base_by_name(process_id, module_name).unwrap_or_else(|e| {panic!("{}",e)});
 /// println!("{} BaseAddr: 0x{:X}",module_name ,base_addr);
 /// ```
 #[cfg(target_os="windows")]
@@ -121,7 +121,7 @@ pub fn get_module_base_by_name(pid: u32, name: &str) -> Result<u64, String> {
 ///
 /// ```
 /// let process_id = 1829;
-/// let process_handle = get_handle_all(process_id).unwrap_or_else(|e| {println!("{}",e); exit(3)});
+/// let process_handle = get_handle_all(process_id).unwrap_or_else(|e| {panic!("{}",e)});
 /// ```
 #[cfg(target_os="windows")]
 pub fn get_handle_all(pid: u32) -> Result<HANDLE, String> {
@@ -139,7 +139,7 @@ pub fn get_handle_all(pid: u32) -> Result<HANDLE, String> {
 /// # Example
 /// ```
 /// let health_call_addr = 0x7FFF7D33B0B4;
-/// let bytes = read_memory(process_handle, health_call_addr, 3).unwrap_or_else(|e| {println!("{}",e); exit(4)});
+/// let bytes = read_memory(process_handle, health_call_addr, 3).unwrap_or_else(|e| {panic!("{}",e)});
 /// if bytes == vec!(0xFF, 0x50, 0x30) {println!("Read successful: {:X?}",bytes)}
 /// else {println!("Error: Read bytes contain unexpected values:{:X?}",bytes); exit(5);}
 /// ```
@@ -169,7 +169,7 @@ pub fn read_memory(handle: HANDLE, addr: u64, size: usize) -> Result<Vec<u8>, St
 /// ```
 /// let health_call_addr = 0x7FFF7D33B0B4;
 /// let mut buffer = vec!(0x90;3);
-/// write_memory(process_handle, health_call_addr, &mut buffer).unwrap_or_else(|e| {println!("{}",e); exit(6)});
+/// write_memory(process_handle, health_call_addr, &mut buffer).unwrap_or_else(|e| {panic!("{}",e)});
 /// ```
 #[cfg(target_os="windows")]
 pub fn write_memory(handle: HANDLE, addr: u64, buffer: &mut Vec<u8>) -> Result<u8,String> {
@@ -187,10 +187,26 @@ pub fn write_memory(handle: HANDLE, addr: u64, buffer: &mut Vec<u8>) -> Result<u
 
 
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn it_works() {
-        assert_eq!(2 + 2, 4);
-    }
+/// Reads len [target_bytes] at [base_addr]+[offset] in [handle].\
+/// If read bytes match target_bytes, writes nop's at offset.
+/// If read bytes are nop, writes target_bytes at offset
+/// Returns 0 if successful
+/// 
+/// # Example
+/// 
+/// ```
+/// target_bytes = vec!(0xFF, 0x50, 0x30);
+/// let target_offset = 0x86AB0B4;
+/// toggle_nop(process_handle, base_addr, target_offset, target_bytes).unwrap_or_else(|e| {panic!("{}",e)});
+/// ```
+pub fn toggle_nop(process_handle: *mut std::ffi::c_void, base_addr: u64, offset: u64, target_bytes: &mut Vec<u8>) -> Result<u8,String>{
+    let target_addr = base_addr+offset;                                                             //calculates target offset
+    let mut nop = vec!(0x90;target_bytes.len());                                                    //creates nopped bytes
+    let read_bytes = read_memory(process_handle, target_addr, target_bytes.len())?;                 //reads target_bytes.len() memory at offset
+    if &read_bytes == target_bytes {                                                                //if bytes haven't been nopped
+        write_memory(process_handle, target_addr, &mut nop)?;                                       //write nopped bytes at offset
+    } else if read_bytes == nop {                                                                   //else if have been nopped
+        write_memory(process_handle, target_addr, target_bytes)?;                                   //write target bytes at offset
+    } else {return Err(format!("Error: Read bytes contained unexpected values:{:X?}",read_bytes))}  //if bytes don't match target_bytes or nopped bytes, return error
+    Ok(0)
 }
