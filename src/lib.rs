@@ -199,14 +199,14 @@ pub fn write_memory(handle: HANDLE, addr: u64, buffer: &mut Vec<u8>) -> Result<u
 /// let target_offset = 0x86AB0B4;
 /// toggle_nop(process_handle, base_addr, target_offset, target_bytes).unwrap_or_else(|e| {panic!("{}",e)});
 /// ```
-pub fn toggle_nop(process_handle: *mut std::ffi::c_void, base_addr: u64, offset: u64, mut target_bytes: Vec<u8>) -> Result<u8,String>{
+pub fn toggle_nop(process_handle: *mut std::ffi::c_void, base_addr: u64, offset: u64, target_bytes: &mut Vec<u8>) -> Result<u8,String>{
     let target_addr = base_addr+offset;                                                             //calculates target offset
     let mut nop = vec!(0x90;target_bytes.len());                                                    //creates nopped bytes
     let read_bytes = read_memory(process_handle, target_addr, target_bytes.len())?;                 //reads target_bytes.len() memory at offset
-    if read_bytes == target_bytes {                                                                //if bytes haven't been nopped
+    if read_bytes == *target_bytes {                                                                //if bytes haven't been nopped
         write_memory(process_handle, target_addr, &mut nop)?;                                       //write nopped bytes at offset
     } else if read_bytes == nop {                                                                   //else if have been nopped
-        write_memory(process_handle, target_addr, &mut target_bytes)?;                              //write target bytes at offset
+        write_memory(process_handle, target_addr, target_bytes)?;                                   //write target bytes at offset
     } else {return Err(format!("Error: Read bytes contained unexpected values:{:X?}",read_bytes))}  //if bytes don't match target_bytes or nopped bytes, return error
     Ok(0)
 }
