@@ -1,15 +1,17 @@
 // cSpell:enableCompoundWords
-// cSpell:words tlhelp DWORD dwflag ctypes ctype winnt basetsd LPCVOID LPVOID PHANDLE LPCWSTR PLUID LUID baseaddr dll's nop's nopped
+// cSpell:words tlhelp DWORD dwflag ctypes ctype winnt basetsd LPCVOID LPVOID PHANDLE LPCWSTR PLUID LUID baseaddr dll's nop's nopped ntdef
 
 use winapi::um::tlhelp32::{TH32CS_SNAPPROCESS, PROCESSENTRY32W, TH32CS_SNAPMODULE, TH32CS_SNAPMODULE32, MODULEENTRY32W, CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, Module32FirstW, Module32NextW};
 use winapi::um::handleapi::{INVALID_HANDLE_VALUE, CloseHandle};
 use winapi::um::processthreadsapi::{OpenProcess};
-use winapi::um::winnt::{PROCESS_ALL_ACCESS, HANDLE};
-use winapi::um::memoryapi::{ReadProcessMemory, WriteProcessMemory};
+use winapi::um::winnt::{PROCESS_ALL_ACCESS, HANDLE, MEM_COMMIT,PAGE_EXECUTE_READWRITE};
+use winapi::um::memoryapi::{ReadProcessMemory, WriteProcessMemory, VirtualAllocEx, VirtualProtectEx};
+use winapi::um::errhandlingapi::GetLastError;
 use winapi::shared::minwindef::{LPCVOID, LPVOID};
+use winapi::shared::ntdef::NULL;
 use winapi::ctypes::c_void;
 use wio::wide::FromWide;
-use std::mem::{zeroed, size_of, MaybeUninit};
+use std::mem::{zeroed, size_of, MaybeUninit, transmute};
 use std::ffi::OsString;
 
 
@@ -107,7 +109,7 @@ pub fn get_module_base_by_name(pid: u32, name: &str) -> Result<u64, String> {
         },
         _ => {
             unsafe {CloseHandle(snap_handle)};                                                              //if none matched, close snapshot handle
-            Err(format!("Module \"{}\" not found", name))                                                   //return error
+            Err(format!("Could not find module {}. GetLastError returned {}", name, unsafe{GetLastError()}))             //return error
         }
     }
 }
@@ -127,7 +129,7 @@ pub fn get_module_base_by_name(pid: u32, name: &str) -> Result<u64, String> {
 pub fn get_handle_all(pid: u32) -> Result<HANDLE, String> {
     let handle = unsafe{OpenProcess(PROCESS_ALL_ACCESS, 0, pid)};                       //takes the desired access, InheritHandle flag (false for us), and  pid. returns handle to process
     match handle as usize {
-        0x0 => Err("Unable to get process handle (try running as admin)".to_string()),  //if handle is null return error
+        0x0 => Err(format!("Unable to get process handle (try running as admin). GetLastError returned {}", unsafe{GetLastError()})),  //if handle is null return error
         _ => Ok(handle),                                                                //else return handle
     }
 }
@@ -154,7 +156,7 @@ pub fn read_memory(handle: HANDLE, addr: u64, size: usize) -> Result<Vec<u8>, St
                 if bytes_read == size {Ok(buffer)}                                                                                  //if correct amount of bytes read return buffer
                 else {Err(format!("Error: read {} bytes instead of {} at {:X}", bytes_read, size, addr))}                           //else return error
             },
-            _ => Err(format!("Error reading memory at {:X}", addr))                                                                 //if error reading return error
+            _ => Err(format!("Error reading memory at {:X}. GetLastError returned {}", addr, GetLastError()))                                                                 //if error reading return error
         }
     }
 }
@@ -180,34 +182,123 @@ pub fn write_memory(handle: HANDLE, addr: u64, buffer: &mut Vec<u8>) -> Result<u
                 if bytes_wrote == buffer.len() {Ok(0)}                                                                                          //if correct amount of bytes written, return Ok
                 else {Err(format!("Error: wrote {} bytes instead of {} at {:X}", bytes_wrote, buffer.len(), addr))}                             //else return error
             },
-            _ => Err(format!("Error writing to memory at {:X}", addr))                                                                          //if error writing return error
+            _ => Err(format!("Error writing to memory at {:X}. GetLastError returned {}", addr, GetLastError()))                                                                          //if error writing return error
         }
     }
 }
 
 
 
-/// Reads len [target_bytes] at [base_addr]+[offset] in [handle].\
-/// If read bytes match target_bytes, writes nop's at offset.
-/// If read bytes are nop, writes target_bytes at offset
+/// Reads len [target_bytes] at [base_addr]+[offset] in [handle]\
+/// If read_bytes match target_bytes, writes nop's at injection_offset\
+/// If read_bytes are nop, writes target_bytes at injection_offset\
 /// Returns bool for if address is currently nopped
-/// 
+///
 /// # Example
-/// 
+///
 /// ```
 /// target_bytes = vec!(0xFF, 0x50, 0x30);
 /// let target_offset = 0x86AB0B4;
 /// toggle_nop(process_handle, base_addr, target_offset, target_bytes).unwrap_or_else(|e| {panic!("{}",e)});
 /// ```
-pub fn toggle_nop(process_handle: *mut std::ffi::c_void, base_addr: u64, offset: u64, target_bytes: &mut Vec<u8>) -> Result<bool,String>{
-    let target_addr = base_addr+offset;                                                             //calculates target offset
-    let mut nop = vec!(0x90;target_bytes.len());                                                    //creates nopped bytes
-    let read_bytes = read_memory(process_handle, target_addr, target_bytes.len())?;                 //reads target_bytes.len() memory at offset
-    if read_bytes == *target_bytes {                                                                //if bytes haven't been nopped
-        write_memory(process_handle, target_addr, &mut nop)?;                                       //write nopped bytes at offset
+pub fn toggle_nop(process_handle: *mut std::ffi::c_void, base_addr: u64, offset: u64, target_bytes: &mut Vec<u8>) -> Result<bool,String> {
+    let target_addr = base_addr+offset;                                                     //calculates target address
+    let mut nop = vec!(0x90;target_bytes.len());                                            //creates nopped bytes
+    let read_bytes = read_memory(process_handle, target_addr, target_bytes.len())?;         //reads target_bytes.len() memory at offset
+    if read_bytes == *target_bytes {                                                        //if bytes haven't been nopped
+        write_memory(process_handle, target_addr, &mut nop)?;                               //write nopped bytes at offset
         Ok(true)
-    } else if read_bytes == nop {                                                                   //else if have been nopped
-        write_memory(process_handle, target_addr, target_bytes)?;                                   //write target bytes at offset
+    } else if read_bytes == nop {                                                           //else if have been nopped
+        write_memory(process_handle, target_addr, target_bytes)?;                           //write target bytes at offset
         Ok(false)
-    } else {return Err(format!("Error: Read bytes contained unexpected values:{:X?}",read_bytes))}  //if bytes don't match target_bytes or nopped bytes, return error
+    } else {Err(format!("Error: Read bytes contained unexpected values:{:X?}",read_bytes))} //if bytes don't match target_bytes or nopped bytes, return error
+}
+
+
+
+/// Reads [target_bytes] at [base_addr+offset] in [handle]\
+/// If read_bytes match target_bytes, writes modified_bytes at offset\
+/// Else if read_bytes match modified_bytes, writes target_bytes at injection offset\
+/// Returns bool for if address is currently modified.
+pub fn toggle_modify(process_handle: *mut std::ffi::c_void, base_addr: u64, offset: u64, target_bytes: &mut Vec<u8>, modified_bytes: &mut Vec<u8>) -> Result<bool, String> {
+    let target_addr = base_addr+offset;
+    let read_bytes = read_memory(process_handle, target_addr, target_bytes.len())?;         //reads target_bytes.len() memory at offset
+    if read_bytes == *target_bytes {                                                        //if bytes haven't been nopped
+        write_memory(process_handle, target_addr, modified_bytes)?;                         //write nopped bytes at offset
+        Ok(true)
+    } else if read_bytes == *modified_bytes {                                               //else if have been nopped
+        write_memory(process_handle, target_addr, target_bytes)?;                           //write target bytes at offset
+        Ok(false)
+    } else {Err(format!("Error: Read bytes contained unexpected values:{:X?}",read_bytes))} //if bytes don't match target_bytes or nopped bytes, return error
+}
+
+
+
+fn _change_protection(process_handle: *mut std::ffi::c_void, addr: u64, size: usize) -> Result<u8,String>{
+    unsafe {
+        let mut old = 0;
+        match VirtualProtectEx(process_handle, addr as LPVOID, size, PAGE_EXECUTE_READWRITE, &mut old) {
+            1 => Ok(0),
+            _ => {Err(format!("Could not change memory protection at {:X}. GetLastError returned {}",addr, GetLastError()))},
+        }
+    }
+}
+
+
+
+fn alloc_memory(process_handle: *mut std::ffi::c_void, addr: u64, size: usize) -> Result<u64, String> {
+    unsafe{
+        let new_mem = VirtualAllocEx(process_handle, addr as LPVOID, size, MEM_COMMIT, PAGE_EXECUTE_READWRITE);     //allocate new memory
+        match new_mem {
+            NULL => Err(format!("Error allocating memory at {:X}. GetLastError returned {}", addr, GetLastError())),//if memory allocation failed return error
+            _ => Ok(new_mem as u64),                                                                                //else return address to new memory
+        }
+    }
+}
+
+
+
+///converts 64 bit address to FF25 far jump code
+pub fn create_jmp(addr: u64) -> Result<Vec<u8>, String> {
+    let mut jmp = vec!(0xff, 0x25, 0x00, 0x00, 0x00, 0x00); //jmp code
+    let addr: [u8;8] = unsafe {transmute(addr.to_le())};    //translate address to little endian bytes
+    for byte in addr.iter(){jmp.push(*byte)}                //append bytes to jmp code
+    Ok(jmp)                                                 //return jmp code
+}
+
+
+
+fn create_injected_jmp(addr: u64, target_bytes: &Vec<u8>) -> Result<Vec<u8>, String> {
+    let mut jmp = create_jmp(addr)?;                                //create jmp code                  
+    if target_bytes.len() >= jmp.len() {                            //if jmp smaller than target bytes
+        for _ in 0..target_bytes.len()-jmp.len() {jmp.push(0x90)}   //nop rest of space
+    } else {                                                        //if jmp cant fit in target bytes return error
+        return Err(format!("Error: can't fit jump instruction ({} bytes) into target bytes ({} bytes)", jmp.len(), target_bytes.len()))
+    }
+    Ok(jmp)                                                         //return jmp code
+}
+
+
+
+/// if cave_offset not defined, allocates new memory region and stores offset in cave offset\
+/// if target_bytes at injection_offset, write shellcode to cave_offset and overwrite target_bytes with jump code at injection_offset\
+/// else if jump code at injection_offset, zero code at cave_addr and write target_bytes to injection_offset
+pub fn toggle_jmp(process_handle: *mut std::ffi::c_void, base_addr: u64, injection_offset: u64, target_bytes: &mut Vec<u8>, cave_addr: &mut u64, shellcode: &mut Vec<u8>) -> Result<bool, String> {
+    if *cave_addr == 0 {
+        *cave_addr = alloc_memory(process_handle, *cave_addr, shellcode.len()+32)?;         //allocates new memory at cave_offset
+    }
+    let mut inject_bytes = create_injected_jmp(*cave_addr, target_bytes)?;                  //create code to inject at target bytes
+
+    let target_addr = base_addr+injection_offset;                                           //calc target injection address
+
+    let read_bytes = read_memory(process_handle, target_addr, target_bytes.len())?;         //read target injection address
+    if read_bytes == *target_bytes {                                                        //if target bytes at target address
+        write_memory(process_handle, *cave_addr, shellcode)?;                               //write shellcode in code cave
+        write_memory(process_handle, target_addr, &mut inject_bytes)?;                      //write jump to shellcode at target address
+        Ok(true)
+    } else if read_bytes == inject_bytes {                                                  //else if inject_bytes at target address
+        write_memory(process_handle, target_addr, target_bytes)?;                           //write original bytes to target_address
+        write_memory(process_handle, *cave_addr, &mut vec!(0x00;shellcode.len()))?;         //zero out shellcode in code cave
+        Ok(false)
+    } else {Err(format!("Error: Read bytes contained unexpected values:{:X?}",read_bytes))} //if read bytes don't match expected then return error
 }
